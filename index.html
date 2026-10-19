@@ -129,6 +129,12 @@ textarea.field{padding:10px 12px;min-height:110px;resize:vertical;font-size:14px
 .toggle input::after{content:"";position:absolute;top:3px;left:3px;width:24px;height:24px;border-radius:50%;background:#fff;transition:transform .15s}
 .toggle input:checked{background:var(--accent)}
 .toggle input:checked::after{transform:translateX(20px);background:var(--accent-ink)}
+.seg{display:flex;gap:6px;margin-top:10px}
+.seg label{flex:1;min-width:0}
+.seg input{position:absolute;opacity:0;pointer-events:none}
+.seg span{display:block;padding:11px 6px;border-radius:10px;background:var(--surface-2);text-align:center;font-weight:500;font-size:14px;cursor:pointer}
+.seg input:checked+span{background:var(--accent);color:var(--accent-ink);font-weight:600}
+.seg input:focus-visible+span{outline:2px solid var(--accent);outline-offset:2px}
 details summary{cursor:pointer;color:var(--accent);font-weight:600;padding:6px 0}
 
 /* Navegación inferior */
@@ -176,6 +182,7 @@ details summary{cursor:pointer;color:var(--accent);font-weight:600;padding:6px 0
 .perr p{color:#cfc8dc;margin:0 0 16px;font-size:14px}
 .perr .detail{font-size:12px;color:#9a92aa;margin:-8px 0 16px}
 .perr .detail:empty{display:none}
+.perr .diag{font:12px/1.45 ui-monospace,Menlo,Consolas,monospace;color:#cfc8dc;text-align:left;white-space:pre-wrap;word-break:break-all;max-height:32vh;overflow:auto;background:rgba(255,255,255,.07);padding:10px;border-radius:10px;margin:0 0 14px;user-select:text;-webkit-user-select:text}
 .perr .stack{align-items:stretch}
 
 /* Aviso y carga */
@@ -208,10 +215,12 @@ details summary{cursor:pointer;color:var(--accent);font-weight:600;padding:6px 0
       <h3>No se puede reproducir</h3>
       <p id="perrmsg"></p>
       <p class="detail" id="perrdetail"></p>
+      <pre class="diag" id="perrdiag" hidden></pre>
       <div class="stack">
         <a class="btn" id="pweb" target="_blank" rel="noopener noreferrer" referrerpolicy="no-referrer" href="#">Abrir en el navegador</a>
         <button class="btn alt" id="pvlc">Abrir en VLC</button>
         <button class="btn alt" id="pretry">Reintentar</button>
+        <button class="btn alt" id="pdiag">Probar conexión</button>
         <button class="btn alt" id="palt" hidden>Probar como HLS (.m3u8)</button>
         <button class="btn alt" id="perrclose">Cerrar</button>
       </div>
@@ -273,11 +282,12 @@ let favs = new Set(LS.get('telon.favs', []));
 let recents = LS.get('telon.recents', []);
 let progress = LS.get('telon.progress', {});
 let watched = new Set(LS.get('telon.watched', []));
-const cfg = Object.assign({ https: true, hls: true, autonext: true, url: '', player: 'native' }, LS.get('telon.cfg', {}));
+const cfg = Object.assign({ https: true, hls: true, autonext: true, url: '', player: 'web' }, LS.get('telon.cfg', {}));
 const saveFavs = () => LS.set('telon.favs', [...favs]);
 const saveCfg = () => LS.set('telon.cfg', cfg);
 const saveProgress = () => LS.set('telon.progress', progress);
 const saveWatched = () => LS.set('telon.watched', [...watched].slice(-3000));
+if (!cfg.pv) { if (cfg.player === 'native') cfg.player = 'web'; cfg.pv = 1; saveCfg(); }
 
 /* ---------- lectura de la lista M3U ---------- */
 const EP_PATTERNS = [
@@ -509,7 +519,14 @@ function renderSettings() {
       <p class="note">La lista y tu dirección se guardan solo en este dispositivo.</p>
     </div>
     <div class="panel"><h2>Reproducción</h2>
-      <label class="toggle"><div><b>Reproducir con VLC</b><small>Abre cada canal o vídeo en la app VLC, que lee casi cualquier formato. Necesita VLC for Mobile instalada.</small></div><input type="checkbox" id="cfg-vlc" ${cfg.player === 'vlc' ? 'checked' : ''}></label>
+      <div class="toggle" style="display:block"><b style="font-weight:600">Reproductor</b>
+        <div class="seg" role="radiogroup" aria-label="Reproductor">
+          <label><input type="radio" name="cfg-player" value="web" ${cfg.player === 'web' ? 'checked' : ''}><span>Navegador</span></label>
+          <label><input type="radio" name="cfg-player" value="vlc" ${cfg.player === 'vlc' ? 'checked' : ''}><span>VLC</span></label>
+          <label><input type="radio" name="cfg-player" value="native" ${cfg.player === 'native' ? 'checked' : ''}><span>Integrado</span></label>
+        </div>
+        <small style="display:block;margin-top:8px">${cfg.player === 'vlc' ? 'Abre cada canal o vídeo en la app VLC, que lee casi cualquier formato. Necesita VLC for Mobile instalada.' : cfg.player === 'native' ? 'Reproduce dentro de Telón. Con algunos proveedores falla porque no permiten que otra web incruste sus canales.' : 'Abre cada canal en el navegador del dispositivo. Los vídeos .mkv no se reproducen ahí: para ellos usa VLC.'}</small>
+      </div>
       <label class="toggle"><div><b>Usar HTTPS en los enlaces</b><small>El iPhone bloquea los enlaces http en una web segura.</small></div><input type="checkbox" id="cfg-https" ${cfg.https ? 'checked' : ''}></label>
       <label class="toggle"><div><b>TV en directo como HLS</b><small>Cambia .ts por .m3u8, el formato que entiende el iPhone.</small></div><input type="checkbox" id="cfg-hls" ${cfg.hls ? 'checked' : ''}></label>
       <label class="toggle"><div><b>Siguiente episodio automático</b><small>Al terminar un episodio pasa al siguiente.</small></div><input type="checkbox" id="cfg-next" ${cfg.autonext ? 'checked' : ''}></label>
@@ -568,18 +585,19 @@ async function loadText(text, label) {
 
 /* ---------- reproductor ---------- */
 const vid = $('#vid');
-const P = { list: [], i: 0, hls: null, bump: 0, lastSave: 0, closing: false, force: '', wake: null };
-let hlsPromise = null;
-function ensureHls() {
-  if (window.Hls) return Promise.resolve(window.Hls);
-  if (!hlsPromise) hlsPromise = new Promise(res => {
+const P = { list: [], i: 0, hls: null, mp: null, bump: 0, lastSave: 0, closing: false, force: '', wake: null, gen: 0, cur: '', stage: -1, stages: [], log: [], timer: 0, playing: false };
+const libs = {};
+function loadLib(key, src, test) {
+  if (test()) return Promise.resolve(true);
+  if (!libs[key]) libs[key] = new Promise(res => {
     const s = document.createElement('script');
-    s.src = 'https://cdnjs.cloudflare.com/ajax/libs/hls.js/1.5.13/hls.min.js';
-    s.onload = () => res(window.Hls || null); s.onerror = () => res(null);
+    s.src = src; s.onload = () => res(test()); s.onerror = () => { libs[key] = null; res(false); };
     document.head.appendChild(s);
   });
-  return hlsPromise;
+  return libs[key];
 }
+const ensureHls = () => loadLib('hls', 'https://cdn.jsdelivr.net/npm/hls.js@1.5.13/dist/hls.min.js', () => !!window.Hls).then(ok => ok ? window.Hls : null);
+const ensureMpegts = () => loadLib('mpegts', 'https://cdn.jsdelivr.net/npm/mpegts.js@1.8.0/dist/mpegts.js', () => !!window.mpegts).then(ok => ok ? window.mpegts : null);
 function prepUrl(it) {
   let u = it.url;
   if (cfg.https && location.protocol === 'https:' && /^http:\/\//i.test(u)) u = 'https://' + u.slice(7).replace(/^([^/:]+):80(?=\/)/, '$1');
@@ -587,20 +605,34 @@ function prepUrl(it) {
   else if (it.k === 'live' && cfg.hls) u = u.replace(/\.ts(\?.*)?$/i, '.m3u8$1');
   return u;
 }
-function destroyHls() { if (P.hls) { try { P.hls.destroy(); } catch (e) {} P.hls = null; } }
+function destroyHls() {
+  if (P.hls) { try { P.hls.destroy(); } catch (e) {} P.hls = null; }
+  if (P.mp) { try { P.mp.destroy(); } catch (e) {} P.mp = null; }
+  clearTimeout(P.timer);
+}
 function errDetail(e) {
   if (!e) return '';
   const m = { 1: 'carga cancelada', 2: 'error de red: el servidor rechazó o cortó la conexión', 3: 'error al decodificar el vídeo', 4: 'formato no compatible o enlace no accesible' };
   return 'Código ' + e.code + ': ' + (m[e.code] || 'error');
 }
-function openVlc(it) {
-  const href = 'vlc-x-callback://x-callback-url/stream?url=' + encodeURIComponent(it.url);
+function launchExternal(it, href, msg) {
   if (it.k === 'live') { recents = [it.key, ...recents.filter(k => k !== it.key)].slice(0, 12); LS.set('telon.recents', recents); }
   else if (it.key) { watched.add(it.key); saveWatched(); }
   const a = document.createElement('a');
-  a.href = href; a.rel = 'noopener'; document.body.appendChild(a); a.click(); a.remove();
-  toast('Abriendo VLC…');
+  a.href = href; a.rel = 'noopener noreferrer'; a.referrerPolicy = 'no-referrer';
+  if (/^https?:/i.test(href)) a.target = '_blank';
+  document.body.appendChild(a); a.click(); a.remove();
+  toast(msg);
   if (!$('#sheet').hidden) renderSheet(true);
+}
+function openVlc(it) {
+  launchExternal(it, 'vlc-x-callback://x-callback-url/stream?url=' + encodeURIComponent(it.url), 'Abriendo VLC…');
+}
+function openWeb(it) {
+  const f = P.force; P.force = '';
+  const u = prepUrl(it);
+  P.force = f;
+  launchExternal(it, u, 'Abriendo en el navegador…');
 }
 function showErr(msg, detail) {
   $('#perrdetail').textContent = detail || '';
@@ -613,21 +645,80 @@ function showErr(msg, detail) {
   if (it.url) $('#pweb').href = prepUrl(it);
   $('#perr').hidden = false; $('#pspin').hidden = true;
 }
+/* Se prueban varios métodos por orden: reproductor nativo, hls.js y mpegts.js. */
+function stagesFor(it, url) {
+  const st = [];
+  if (/\.m3u8(\?|$)/i.test(url)) {
+    if (vid.canPlayType('application/vnd.apple.mpegurl')) st.push({ t: 'native', url, name: 'nativo' });
+    st.push({ t: 'hls', url, name: 'hls.js' });
+    if (it.k === 'live') st.push({ t: 'mpegts', url: url.replace(/\.m3u8(\?.*)?$/i, '.ts$1'), name: 'mpegts.js' });
+  } else if (/\.ts(\?|$)/i.test(url)) st.push({ t: 'mpegts', url, name: 'mpegts.js' });
+  else st.push({ t: 'native', url, name: 'nativo' });
+  return st;
+}
 function attach(url) {
+  const it = P.list[P.i] || {};
   destroyHls();
-  $('#perr').hidden = true; $('#pspin').hidden = false;
-  const isHls = /\.m3u8(\?|$)/i.test(url);
-  if (isHls && !vid.canPlayType('application/vnd.apple.mpegurl')) {
+  P.log = []; P.stages = stagesFor(it, url); P.stage = -1; P.playing = false;
+  $('#perr').hidden = true; $('#perrdiag').hidden = true; $('#pspin').hidden = false;
+  nextStage();
+}
+function nextStage(why) {
+  const prev = P.stages[P.stage];
+  if (why) P.log.push((prev ? prev.name : '') + ': ' + why);
+  destroyHls();
+  try { vid.pause(); vid.removeAttribute('src'); vid.load(); } catch (e) {}
+  P.stage++;
+  const s = P.stages[P.stage];
+  if (!s) { P.cur = 'none'; showErr(null, P.log.join(' · ')); return; }
+  runStage(s, ++P.gen);
+}
+function runStage(s, gen) {
+  P.cur = s.t; P.playing = false;
+  if (P.stage < P.stages.length - 1) P.timer = setTimeout(() => { if (gen === P.gen && !P.playing && !P.closing) nextStage('sin respuesta en 15 s'); }, 15000);
+  if (s.t === 'native') { vid.src = s.url; vid.play().catch(() => {}); return; }
+  if (s.t === 'hls') {
     ensureHls().then(H => {
-      if (P.closing) return;
-      if (H && H.isSupported()) {
-        const h = new H({ lowLatencyMode: false }); P.hls = h;
-        h.on(H.Events.ERROR, (e, d) => { if (d.fatal) showErr(null, 'HLS: ' + d.type + ' / ' + d.details); });
-        h.loadSource(url); h.attachMedia(vid);
-        vid.play().catch(() => {});
-      } else showErr('Este navegador no puede reproducir HLS.');
+      if (gen !== P.gen || P.closing) return;
+      if (!H || !H.isSupported()) return nextStage('no disponible en este navegador');
+      if ('ManagedMediaSource' in window) vid.disableRemotePlayback = true;
+      const h = new H({ lowLatencyMode: false }); P.hls = h;
+      h.on(H.Events.ERROR, (e, d) => { if (d.fatal && gen === P.gen) nextStage(d.type + ' / ' + d.details); });
+      h.loadSource(s.url); h.attachMedia(vid);
+      vid.play().catch(() => {});
     });
-  } else { vid.src = url; vid.play().catch(() => {}); }
+    return;
+  }
+  ensureMpegts().then(M => {
+    if (gen !== P.gen || P.closing) return;
+    if (!M || !M.isSupported()) return nextStage('no disponible en este navegador');
+    const pl = M.createPlayer({ type: 'mpegts', isLive: true, url: s.url });
+    P.mp = pl; pl.attachMediaElement(vid);
+    pl.on(M.Events.ERROR, (t, d) => { if (gen === P.gen) nextStage(t + ' / ' + d); });
+    pl.load();
+    const pr = pl.play(); if (pr && pr.catch) pr.catch(() => {});
+  });
+}
+async function diagnose() {
+  const it = P.list[P.i]; if (!it) return;
+  const url = prepUrl(it), box = $('#perrdiag'), out = [];
+  box.hidden = false; box.textContent = 'Probando…';
+  const host = u => { try { return new URL(u).host; } catch (e) { return '?'; } };
+  out.push('Enlace: ' + host(url) + ' · ' + (url.match(/\.(\w+)(\?|$)/) || [, '?'])[1]);
+  try {
+    const r = await fetch(url, { mode: 'cors', cache: 'no-store', credentials: 'omit', referrerPolicy: 'no-referrer' });
+    const ct = r.headers.get('content-type') || '?';
+    let sample = '';
+    if (r.body) { const rd = r.body.getReader(); const { value } = await rd.read(); try { rd.cancel(); } catch (e) {} if (value && /mpegurl|text/i.test(ct)) sample = new TextDecoder().decode(value.slice(0, 260)); }
+    out.push('Lectura permitida (CORS): sí · estado ' + r.status + ' · tipo ' + ct);
+    if (r.redirected) out.push('Redirigido a: ' + host(r.url) + ' (' + r.url.split(':')[0] + ')');
+    if (sample) out.push('Inicio: ' + sample.replace(/\s+/g, ' '));
+  } catch (e) {
+    out.push('Lectura permitida (CORS): no (' + e.name + ')');
+    try { await fetch(url, { mode: 'no-cors', cache: 'no-store', referrerPolicy: 'no-referrer' }); out.push('El servidor responde, pero no deja leerlo desde esta web.'); }
+    catch (e2) { out.push('No se pudo conectar con el servidor (' + e2.name + ').'); }
+  }
+  box.textContent = out.join('\n');
 }
 function labelOf(it) { return it.k === 'ep' ? `T${it.s} · E${it.e}` : ''; }
 function loadCurrent() {
@@ -645,13 +736,14 @@ function loadCurrent() {
 }
 async function openPlayer(list, i) {
   if (cfg.player === 'vlc') { if (list[i]) openVlc(list[i]); return; }
+  if (cfg.player === 'web') { if (list[i]) openWeb(list[i]); return; }
   P.list = list; P.i = i; P.force = ''; P.lastSave = 0;
   $('#player').hidden = false; document.body.classList.add('noscroll');
   loadCurrent(); bump();
   try { P.wake = await navigator.wakeLock?.request('screen'); } catch (e) {}
 }
 function closePlayer() {
-  P.closing = true; destroyHls();
+  P.closing = true; P.gen++; destroyHls();
   try { vid.pause(); vid.removeAttribute('src'); vid.load(); } catch (e) {}
   try { P.wake?.release(); } catch (e) {} P.wake = null;
   $('#player').hidden = true; $('#perr').hidden = true;
@@ -679,11 +771,11 @@ vid.addEventListener('loadedmetadata', () => {
   if (p && p.t && isFinite(vid.duration) && p.t < vid.duration - 30) { try { vid.currentTime = p.t; } catch (e) {} }
 });
 vid.addEventListener('timeupdate', () => { const n = Date.now(); if (n - P.lastSave > 5000) { P.lastSave = n; saveNow(); } });
-vid.addEventListener('playing', () => { $('#pspin').hidden = true; $('#perr').hidden = true; bump(); });
+vid.addEventListener('playing', () => { P.playing = true; clearTimeout(P.timer); $('#pspin').hidden = true; $('#perr').hidden = true; bump(); });
 vid.addEventListener('waiting', () => { $('#pspin').hidden = false; });
 vid.addEventListener('canplay', () => { $('#pspin').hidden = true; });
 vid.addEventListener('pause', () => bump());
-vid.addEventListener('error', () => { if (!P.closing && !P.hls) showErr(null, errDetail(vid.error)); });
+vid.addEventListener('error', () => { if (!P.closing && P.cur === 'native') nextStage(errDetail(vid.error)); });
 vid.addEventListener('ended', () => {
   const it = P.list[P.i]; if (!it || it.k === 'live') return;
   delete progress[it.key]; watched.add(it.key); saveProgress(); saveWatched();
@@ -695,6 +787,7 @@ $('#pclose').onclick = $('#perrclose').onclick = closePlayer;
 $('#pprev').onclick = () => step(-1); $('#pnext').onclick = () => step(1);
 $('#pretry').onclick = () => loadCurrent();
 $('#palt').onclick = () => { P.force = 'hls'; loadCurrent(); };
+$('#pdiag').onclick = diagnose;
 $('#pvlc').onclick = () => { const it = P.list[P.i]; closePlayer(); if (it) openVlc(it); };
 $('#pfav').onclick = e => { const k = e.currentTarget.dataset.key; toggleFav(k); $('#pfav').classList.toggle('on', favs.has(k)); };
 
@@ -788,7 +881,7 @@ document.addEventListener('input', e => {
 });
 document.addEventListener('change', e => {
   const t = e.target;
-  if (t.id === 'cfg-vlc') { cfg.player = t.checked ? 'vlc' : 'native'; saveCfg(); }
+  if (t.name === 'cfg-player') { cfg.player = t.value; saveCfg(); renderSettings(); }
   else if (t.id === 'cfg-https') { cfg.https = t.checked; saveCfg(); }
   else if (t.id === 'cfg-hls') { cfg.hls = t.checked; saveCfg(); }
   else if (t.id === 'cfg-next') { cfg.autonext = t.checked; saveCfg(); }
