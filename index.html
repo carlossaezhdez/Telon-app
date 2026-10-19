@@ -6,6 +6,7 @@
 <title>Telón</title>
 <meta name="theme-color" content="#15121b">
 <meta name="color-scheme" content="dark">
+<meta name="referrer" content="no-referrer">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -102,6 +103,7 @@ h1{font:700 28px/1.1 var(--display);letter-spacing:-.01em;margin:0;flex:none}
 
 /* Botones y formularios */
 .btn{display:inline-flex;align-items:center;justify-content:center;gap:8px;min-height:46px;padding:0 20px;border-radius:12px;background:var(--accent);color:var(--accent-ink);font-weight:600;cursor:pointer;text-align:center}
+a.btn{text-decoration:none}
 .btn.alt{background:var(--surface-2);color:var(--text)}
 .btn.danger{background:#5a1f2a;color:#ffd9de}
 .btn input{display:none}
@@ -172,6 +174,8 @@ details summary{cursor:pointer;color:var(--accent);font-weight:600;padding:6px 0
 .perr div{max-width:360px;text-align:center}
 .perr h3{font:700 20px var(--display);margin:0 0 8px}
 .perr p{color:#cfc8dc;margin:0 0 16px;font-size:14px}
+.perr .detail{font-size:12px;color:#9a92aa;margin:-8px 0 16px}
+.perr .detail:empty{display:none}
 .perr .stack{align-items:stretch}
 
 /* Aviso y carga */
@@ -203,8 +207,11 @@ details summary{cursor:pointer;color:var(--accent);font-weight:600;padding:6px 0
     <div>
       <h3>No se puede reproducir</h3>
       <p id="perrmsg"></p>
+      <p class="detail" id="perrdetail"></p>
       <div class="stack">
-        <button class="btn" id="pretry">Reintentar</button>
+        <a class="btn" id="pweb" target="_blank" rel="noopener noreferrer" referrerpolicy="no-referrer" href="#">Abrir en el navegador</a>
+        <button class="btn alt" id="pvlc">Abrir en VLC</button>
+        <button class="btn alt" id="pretry">Reintentar</button>
         <button class="btn alt" id="palt" hidden>Probar como HLS (.m3u8)</button>
         <button class="btn alt" id="perrclose">Cerrar</button>
       </div>
@@ -266,7 +273,7 @@ let favs = new Set(LS.get('telon.favs', []));
 let recents = LS.get('telon.recents', []);
 let progress = LS.get('telon.progress', {});
 let watched = new Set(LS.get('telon.watched', []));
-const cfg = Object.assign({ https: true, hls: true, autonext: true, url: '' }, LS.get('telon.cfg', {}));
+const cfg = Object.assign({ https: true, hls: true, autonext: true, url: '', player: 'native' }, LS.get('telon.cfg', {}));
 const saveFavs = () => LS.set('telon.favs', [...favs]);
 const saveCfg = () => LS.set('telon.cfg', cfg);
 const saveProgress = () => LS.set('telon.progress', progress);
@@ -502,6 +509,7 @@ function renderSettings() {
       <p class="note">La lista y tu dirección se guardan solo en este dispositivo.</p>
     </div>
     <div class="panel"><h2>Reproducción</h2>
+      <label class="toggle"><div><b>Reproducir con VLC</b><small>Abre cada canal o vídeo en la app VLC, que lee casi cualquier formato. Necesita VLC for Mobile instalada.</small></div><input type="checkbox" id="cfg-vlc" ${cfg.player === 'vlc' ? 'checked' : ''}></label>
       <label class="toggle"><div><b>Usar HTTPS en los enlaces</b><small>El iPhone bloquea los enlaces http en una web segura.</small></div><input type="checkbox" id="cfg-https" ${cfg.https ? 'checked' : ''}></label>
       <label class="toggle"><div><b>TV en directo como HLS</b><small>Cambia .ts por .m3u8, el formato que entiende el iPhone.</small></div><input type="checkbox" id="cfg-hls" ${cfg.hls ? 'checked' : ''}></label>
       <label class="toggle"><div><b>Siguiente episodio automático</b><small>Al terminar un episodio pasa al siguiente.</small></div><input type="checkbox" id="cfg-next" ${cfg.autonext ? 'checked' : ''}></label>
@@ -580,13 +588,29 @@ function prepUrl(it) {
   return u;
 }
 function destroyHls() { if (P.hls) { try { P.hls.destroy(); } catch (e) {} P.hls = null; } }
-function showErr(msg) {
+function errDetail(e) {
+  if (!e) return '';
+  const m = { 1: 'carga cancelada', 2: 'error de red: el servidor rechazó o cortó la conexión', 3: 'error al decodificar el vídeo', 4: 'formato no compatible o enlace no accesible' };
+  return 'Código ' + e.code + ': ' + (m[e.code] || 'error');
+}
+function openVlc(it) {
+  const href = 'vlc-x-callback://x-callback-url/stream?url=' + encodeURIComponent(it.url);
+  if (it.k === 'live') { recents = [it.key, ...recents.filter(k => k !== it.key)].slice(0, 12); LS.set('telon.recents', recents); }
+  else if (it.key) { watched.add(it.key); saveWatched(); }
+  const a = document.createElement('a');
+  a.href = href; a.rel = 'noopener'; document.body.appendChild(a); a.click(); a.remove();
+  toast('Abriendo VLC…');
+  if (!$('#sheet').hidden) renderSheet(true);
+}
+function showErr(msg, detail) {
+  $('#perrdetail').textContent = detail || '';
   const it = P.list[P.i] || {};
   const canAlt = it.k !== 'live' && /\.(mkv|mp4|avi|ts|mov|m4v)(\?|$)/i.test(it.url || '') && P.force !== 'hls';
   $('#perrmsg').textContent = msg || (it.k === 'live'
     ? 'El canal no responde. Comprueba que tu lista use output=m3u8 y que no tengas otra conexión abierta con la misma cuenta.'
     : 'El iPhone solo reproduce vídeo MP4 con H.264. Los archivos .mkv suelen fallar. También puede ser que la cuenta tenga otra conexión abierta.');
   $('#palt').hidden = !canAlt;
+  if (it.url) $('#pweb').href = prepUrl(it);
   $('#perr').hidden = false; $('#pspin').hidden = true;
 }
 function attach(url) {
@@ -598,7 +622,7 @@ function attach(url) {
       if (P.closing) return;
       if (H && H.isSupported()) {
         const h = new H({ lowLatencyMode: false }); P.hls = h;
-        h.on(H.Events.ERROR, (e, d) => { if (d.fatal) showErr(); });
+        h.on(H.Events.ERROR, (e, d) => { if (d.fatal) showErr(null, 'HLS: ' + d.type + ' / ' + d.details); });
         h.loadSource(url); h.attachMedia(vid);
         vid.play().catch(() => {});
       } else showErr('Este navegador no puede reproducir HLS.');
@@ -620,6 +644,7 @@ function loadCurrent() {
   attach(prepUrl(it));
 }
 async function openPlayer(list, i) {
+  if (cfg.player === 'vlc') { if (list[i]) openVlc(list[i]); return; }
   P.list = list; P.i = i; P.force = ''; P.lastSave = 0;
   $('#player').hidden = false; document.body.classList.add('noscroll');
   loadCurrent(); bump();
@@ -658,7 +683,7 @@ vid.addEventListener('playing', () => { $('#pspin').hidden = true; $('#perr').hi
 vid.addEventListener('waiting', () => { $('#pspin').hidden = false; });
 vid.addEventListener('canplay', () => { $('#pspin').hidden = true; });
 vid.addEventListener('pause', () => bump());
-vid.addEventListener('error', () => { if (!P.closing && !P.hls) showErr(); });
+vid.addEventListener('error', () => { if (!P.closing && !P.hls) showErr(null, errDetail(vid.error)); });
 vid.addEventListener('ended', () => {
   const it = P.list[P.i]; if (!it || it.k === 'live') return;
   delete progress[it.key]; watched.add(it.key); saveProgress(); saveWatched();
@@ -670,6 +695,7 @@ $('#pclose').onclick = $('#perrclose').onclick = closePlayer;
 $('#pprev').onclick = () => step(-1); $('#pnext').onclick = () => step(1);
 $('#pretry').onclick = () => loadCurrent();
 $('#palt').onclick = () => { P.force = 'hls'; loadCurrent(); };
+$('#pvlc').onclick = () => { const it = P.list[P.i]; closePlayer(); if (it) openVlc(it); };
 $('#pfav').onclick = e => { const k = e.currentTarget.dataset.key; toggleFav(k); $('#pfav').classList.toggle('on', favs.has(k)); };
 
 /* ---------- series ---------- */
@@ -762,7 +788,8 @@ document.addEventListener('input', e => {
 });
 document.addEventListener('change', e => {
   const t = e.target;
-  if (t.id === 'cfg-https') { cfg.https = t.checked; saveCfg(); }
+  if (t.id === 'cfg-vlc') { cfg.player = t.checked ? 'vlc' : 'native'; saveCfg(); }
+  else if (t.id === 'cfg-https') { cfg.https = t.checked; saveCfg(); }
   else if (t.id === 'cfg-hls') { cfg.hls = t.checked; saveCfg(); }
   else if (t.id === 'cfg-next') { cfg.autonext = t.checked; saveCfg(); }
   else if (t.id === 'pl-file' && t.files && t.files[0]) { const f = t.files[0]; setBusy('Leyendo el archivo…'); f.text().then(txt => loadText(txt, f.name)).catch(() => { setBusy(''); loadErr = 'No se pudo leer el archivo.'; renderSettings(); }); t.value = ''; }
